@@ -1,4 +1,4 @@
-module GG_DB
+module ggdb
 
 go 1.20
 

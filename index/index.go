@@ -1,8 +1,8 @@
 package index
 
 import (
-	"GG_DB/data"
 	"bytes"
+	"ggdb/data"
 	"github.com/google/btree"
 )
 

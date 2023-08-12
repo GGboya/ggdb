@@ -1,7 +1,7 @@
 package index
 
 import (
-	"GG_DB/data"
+	"ggdb/data"
 	"github.com/google/btree"
 	"sync"
 )
