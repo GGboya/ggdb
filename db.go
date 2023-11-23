@@ -3,6 +3,7 @@ package GG_DB
 import (
 	"GG_DB/data"
 	"GG_DB/index"
+	syncx "GG_DB/internal/sync"
 	"errors"
 	"io"
 	"os"
@@ -14,7 +15,7 @@ import (
 
 type DB struct {
 	options    Options
-	mu         *sync.RWMutex
+	mu         sync.Locker
 	fileIds    []int                     // 文件id, 加载索引的时候使用
 	activeFile *data.DataFile            // 当前活跃数据文件，可以用于写入
 	olderFiles map[uint32]*data.DataFile // 旧的数据文件，只能用于读
@@ -38,7 +39,7 @@ func Open(options Options) (*DB, error) {
 	// 初始化DB实例结构体
 	db := &DB{
 		options:    options,
-		mu:         new(sync.RWMutex),
+		mu:         syncx.NewSpinLock(),
 		olderFiles: make(map[uint32]*data.DataFile),
 		index:      index.NewIndexer(options.IndexType),
 	}
