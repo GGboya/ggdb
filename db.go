@@ -3,6 +3,7 @@ package GG_DB
 import (
 	"GG_DB/data"
 	"GG_DB/index"
+	"GG_DB/internal/bloom"
 	syncx "GG_DB/internal/sync"
 	"errors"
 	"io"
@@ -14,12 +15,13 @@ import (
 )
 
 type DB struct {
-	options    Options
-	mu         sync.Locker
-	fileIds    []int                     // 文件id, 加载索引的时候使用
-	activeFile *data.DataFile            // 当前活跃数据文件，可以用于写入
-	olderFiles map[uint32]*data.DataFile // 旧的数据文件，只能用于读
-	index      index.Indexer             // 内存索引
+	options     Options
+	mu          sync.Locker
+	fileIds     []int                     // 文件id, 加载索引的时候使用
+	activeFile  *data.DataFile            // 当前活跃数据文件，可以用于写入
+	olderFiles  map[uint32]*data.DataFile // 旧的数据文件，只能用于读
+	index       index.Indexer             // 内存索引
+	bloomFilter *bloom.BloomFilter
 }
 
 // Open 打开bitcask存储引擎实例
@@ -38,10 +40,11 @@ func Open(options Options) (*DB, error) {
 
 	// 初始化DB实例结构体
 	db := &DB{
-		options:    options,
-		mu:         syncx.NewSpinLock(),
-		olderFiles: make(map[uint32]*data.DataFile),
-		index:      index.NewIndexer(options.IndexType),
+		options:     options,
+		mu:          syncx.NewSpinLock(),
+		olderFiles:  make(map[uint32]*data.DataFile),
+		index:       index.NewIndexer(options.IndexType),
+		bloomFilter: bloom.NewBloomFilter(100, 3),
 	}
 
 	// 加载数据文件
@@ -81,6 +84,7 @@ func (db *DB) Put(key []byte, value []byte) error {
 	if ok := db.index.Put(key, pos); !ok {
 		return ErrIndexUpdateFailed
 	}
+	db.bloomFilter.Add(key)
 	return nil
 }
 
@@ -122,6 +126,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		return nil, ErrKeyIsEmpty
 	}
 
+	if !db.bloomFilter.Contains(key) {
+		return nil, ErrKeyNotFound
+	}
 	// 从内存数据结构中取出key对应的索引信息
 	logRecordPos := db.index.Get(key)
 	// 如果key不在内存索引中，说明key不存在
@@ -141,7 +148,6 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if dataFile == nil {
 		return nil, ErrDataFileNotFound
 	}
-
 	// 根据偏移量读取对应的数据
 	logRecord, _, err := dataFile.ReadLogRecord(logRecordPos.Offset)
 	if err != nil {
@@ -159,7 +165,6 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
 	// 判断当前活跃数据文件是否存在，因为数据库在没有写入的时候是没有文件生成的
 	// 如果为空则初始化数据文件
 	if db.activeFile == nil {
@@ -188,7 +193,7 @@ func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, er
 			return nil, err
 		}
 	}
-
+	writeOff := db.activeFile.WriteOff
 	if err := db.activeFile.Write(encRecord); err != nil {
 		return nil, err
 	}
@@ -203,7 +208,7 @@ func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, er
 	// 构造内存索引信息
 	pos := &data.LogRecordPos{
 		Fid:    db.activeFile.FileID,
-		Offset: db.activeFile.WriteOff,
+		Offset: writeOff,
 	}
 	return pos, nil
 }
@@ -212,7 +217,7 @@ func (db *DB) appendLogRecord(logRecord *data.LogRecord) (*data.LogRecordPos, er
 // 在访问此方法前必须持有互斥锁
 func (db *DB) setActiveDataFile() error {
 	var initialFileId uint32 = 0
-	if db.activeFile == nil {
+	if db.activeFile != nil {
 		initialFileId = db.activeFile.FileID + 1
 	}
 	// 打开新的数据文件
@@ -302,6 +307,7 @@ func (db *DB) loadIndexFromDatafiles() error {
 				db.index.Delete(logRecord.Key)
 			} else {
 				db.index.Put(logRecord.Key, logRecordPos)
+				db.bloomFilter.Add(logRecord.Key)
 			}
 
 			offset += size
