@@ -1,6 +1,10 @@
 package data
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+	"hash/crc32"
+)
 
 type LogRecordType = byte
 
@@ -37,14 +41,67 @@ type LogRecordPos struct {
 
 // EncodeLogRecord 对LogRecord进行编码，返回字节数组及长度
 func EncodeLogRecord(record *LogRecord) ([]byte, int64) {
-	return nil, 0
+	// crc type, keySize, valueSize, key, value
+	// 4    1      5         5
+	// 初始化一个 header 部分的字节数组
+
+	header := make([]byte, maxLogRecordHeaderSize)
+
+	header[4] = record.Type
+	var index = 5
+
+	index += binary.PutVarint(header[index:], int64(len(record.Key)))
+	index += binary.PutVarint(header[index:], int64(len(record.Value)))
+
+	var size = index + len(record.Key) + len(record.Value)
+	encBytes := make([]byte, size)
+
+	copy(encBytes[:index], header[:index])
+	copy(encBytes[index:], record.Key)
+	copy(encBytes[index+len(record.Key):], record.Value)
+
+	// 对整个record 的数据进行 crc 校验
+	crc := crc32.ChecksumIEEE(encBytes[4:])
+	binary.LittleEndian.PutUint32(encBytes[:4], crc)
+	fmt.Println(crc, encBytes)
+
+	return encBytes, int64(size)
+
 }
 
 // 对字节数组中的Header信息进行解码
 func decodeLogRecordHeader(buf []byte) (*LogRecordHeader, int64) {
-	return nil, 0
+	if len(buf) <= 4 {
+		return nil, 0
+	}
+
+	header := &LogRecordHeader{
+		crc:        binary.LittleEndian.Uint32(buf[:4]),
+		recordType: buf[4],
+	}
+
+	var index = 5
+	// 取出实际的key size
+	keySize, n := binary.Varint(buf[index:])
+	header.keySize = uint32(keySize)
+	index += n
+
+	// 取出实际的 value size
+	valueSize, n := binary.Varint(buf[index:])
+	header.valueSize = uint32(valueSize)
+	index += n
+
+	return header, int64(index)
 }
 
 func getLogRecordCRC(lr *LogRecord, header []byte) uint32 {
-	return 0
+	if lr == nil {
+		return 0
+	}
+
+	crc := crc32.ChecksumIEEE(header[:])
+	crc = crc32.Update(crc, crc32.IEEETable, lr.Key)
+	crc = crc32.Update(crc, crc32.IEEETable, lr.Value)
+
+	return crc
 }
