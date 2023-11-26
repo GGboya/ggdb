@@ -2,7 +2,6 @@ package data
 
 import (
 	"encoding/binary"
-	"fmt"
 	"hash/crc32"
 )
 
@@ -63,7 +62,6 @@ func EncodeLogRecord(record *LogRecord) ([]byte, int64) {
 	// 对整个record 的数据进行 crc 校验
 	crc := crc32.ChecksumIEEE(encBytes[4:])
 	binary.LittleEndian.PutUint32(encBytes[:4], crc)
-	fmt.Println(crc, encBytes)
 
 	return encBytes, int64(size)
 
